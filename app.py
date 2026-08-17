@@ -11,13 +11,20 @@ st.set_page_config(page_title="日経225 高機能スクリーニング", layout
 st.title("🚀 日経225 高機能スクリーニングアプリ (J-Quants公式データ版)")
 st.write("指標（PER, PBR, ROE, 配当利回り、配当性向、自己資本比率）を総合的に分析し、割安スコアを算出します。")
 
-# --- J-Quants APIの直接認証（ツールを使わない確実な通信方式） ---
+# --- J-Quants APIの直接認証（文字化け防止・完全通信版） ---
 id_token = None
 try:
     if "JQUANTS_REFRESH_TOKEN" in st.secrets:
-        refresh_token = st.secrets["JQUANTS_REFRESH_TOKEN"]
-        # 直接APIを叩いてIDトークン（入場券）を取得する
-        res = requests.post(f"https://api.jquants.com/v1/token/auth_refresh?refresh_token={refresh_token}")
+        # 万が一、余計な空白や「"」が混ざっていても自動で掃除する安全処理
+        raw_token = st.secrets["JQUANTS_REFRESH_TOKEN"]
+        refresh_token = raw_token.strip().strip('"').strip("'")
+        
+        # 文字化けしないように「params」という専用カプセルに入れて鍵を送信する
+        res = requests.post(
+            "https://api.jquants.com/v1/token/auth_refresh",
+            params={"refresh_token": refresh_token}
+        )
+        
         if res.status_code == 200:
             id_token = res.json().get("idToken")
         else:
