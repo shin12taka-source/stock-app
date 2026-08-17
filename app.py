@@ -55,20 +55,35 @@ if st.button(f"「{selected_sector}」のデータを取得＆分析"):
             ticker = yf.Ticker(f"{code}.T")
             info = ticker.info
             
-            # 各種指標の取得（PBR, ROE, 配当利回りを追加）
+            # --- 配当利回りの異常値対策（ここから） ---
+            current_price = info.get("currentPrice", info.get("regularMarketPrice", None))
+            div_rate = info.get("dividendRate", None)
+            
+            # 1株あたり配当金 ÷ 株価 で自前で正確な利回りを計算する
+            if pd.notna(div_rate) and pd.notna(current_price) and current_price > 0:
+                div_yield = div_rate / current_price
+            else:
+                # 予備として従来の利回りデータも取得し、異常に大きい場合（20%超え）は100で割って補正
+                div_yield = info.get("dividendYield", None)
+                if pd.notna(div_yield) and div_yield > 0.2:
+                    div_yield = div_yield / 100
+            # --- 配当利回りの異常値対策（ここまで） ---
+
+            # 各種指標の取得
             results.append({
                 "銘柄コード": code,
                 "企業名": name,
-                "現在株価": info.get("currentPrice", info.get("regularMarketPrice", None)),
+                "現在株価": current_price,
                 "予想PER": info.get("forwardPE", None),
                 "PBR": info.get("priceToBook", None),
                 "ROE": info.get("returnOnEquity", None),
-                "配当利回り": info.get("dividendYield", None)
+                "配当利回り": div_yield
             })
         except Exception as e:
             st.error(f"{name}の取得エラー: {e}")
+        
             
-        time.sleep(0.5) # API制限回避
+        time.sleep(2) # API制限回避
         progress_bar.progress((i + 1) / total_stocks)
         
     status_text.text("データ取得完了！分析を開始します...")
