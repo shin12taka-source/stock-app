@@ -20,20 +20,27 @@ else:
     st.error("⚠️ StreamlitのSecretsに鍵（APIキー）が設定されていません。")
     st.stop()
 
-# 直接データを引き出すための専用通信関数（V2対応）
-def get_jquants_prices(code, key):
+# 💡【新機能】爆速通信＆賢い自動リトライ機能
+# 基本は全速力で通信し、制限(429)が出た時だけ自動で一瞬休んでやり直す
+def fetch_jquants_data(url, key, max_retries=3):
     headers = {"x-api-key": key}
-    res = requests.get(f"https://api.jquants.com/v2/equities/bars/daily?code={code}", headers=headers)
-    if res.status_code == 200:
-        return pd.DataFrame(res.json().get("data", []))
+    for attempt in range(max_retries):
+        res = requests.get(url, headers=headers)
+        if res.status_code == 200:
+            return pd.DataFrame(res.json().get("data", []))
+        elif res.status_code == 429: # 「速すぎる」と怒られた場合
+            time.sleep(2.0) # 2秒だけ休んで再トライ
+        else:
+            break
     return pd.DataFrame()
 
+def get_jquants_prices(code, key):
+    url = f"https://api.jquants.com/v2/equities/bars/daily?code={code}"
+    return fetch_jquants_data(url, key)
+
 def get_jquants_fins(code, key):
-    headers = {"x-api-key": key}
-    res = requests.get(f"https://api.jquants.com/v2/fins/summary?code={code}", headers=headers)
-    if res.status_code == 200:
-        return pd.DataFrame(res.json().get("data", []))
-    return pd.DataFrame()
+    url = f"https://api.jquants.com/v2/fins/summary?code={code}"
+    return fetch_jquants_data(url, key)
 # --------------------------------
 
 # --- 用語解説と目安の折りたたみメニュー ---
@@ -133,7 +140,7 @@ if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
         jq_code = f"{code}0" 
         name = row["企業名"]
         sector_name = row["業種"]
-        status_text.text(f"[{i+1}/{total_stocks}] {name} ({code}) の公式データを取得中...")
+        status_text.text(f"[{i+1}/{total_stocks}] {name} ({code}) のデータを爆速取得中...")
         
         try:
             df_prices = get_jquants_prices(jq_code, api_key)
@@ -151,10 +158,9 @@ if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
                 if current_price is None:
                     current_price = parse_float(last_price_row.get("Close"))
                 
-                # 2. 財務データの取得（徹底捜索ロジック：過去から遡って最新の有効値を探す）
+                # 2. 財務データの取得（徹底捜索ロジック）
                 eps, bps, equity_ratio_raw, div_annual, roe_raw = None, None, None, None, None
                 
-                # 古い決算から順に最新まで回し、存在する値で上書きし続ける（最新の有効値が残る）
                 for fin_idx in range(len(df_fins)):
                     fin = df_fins.iloc[fin_idx].to_dict()
                     
@@ -209,11 +215,12 @@ if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
         except Exception as e:
             st.error(f"{name}のデータ処理エラー: {e}")
         
-        time.sleep(1.2) # API制限を守るための待機時間
+        # 💡 【爆速化】待機時間を 1.2秒 から 0.2秒 に大幅カット！
+        time.sleep(0.2) 
         progress_bar.progress((i + 1) / total_stocks)
         
     status_text.text("データ取得完了！分析を開始します...")
-    time.sleep(1)
+    time.sleep(0.5)
     status_text.empty()
     progress_bar.empty()
     
@@ -248,22 +255,18 @@ if st.session_state.analyzed_data is not None:
         df["スコア"] = df.apply(calculate_score, axis=1)
         df["割安度"] = df["スコア"].apply(lambda x: "⭐" * int(x))
 
-        # 💡 新しいハイブリッド判定ロジック（指標優先、業種は補助）
+        # ハイブリッド判定ロジック
         def classify_hybrid(row):
             sector = row["業種"]
             pbr = row["PBR"]
             roe = row["ROE"]
             div = row["配当利回り"]
             
-            # ① 実績指標が「圧倒的成長」を示している場合
             if pd.notna(roe) and roe >= 0.10 and pd.notna(pbr) and pbr >= 1.5:
                 return "🚀 成長(グロース)"
-                
-            # ② 実績指標が「圧倒的高配当・バリュー」を示している場合
             if pd.notna(div) and div >= 0.035 and pd.notna(pbr) and pbr < 1.0:
                 return "💰 高配当・バリュー"
                 
-            # ③ 指標の決定打がない場合は、業種の特性でベース分類
             if sector in ["情報・通信業", "食料品", "医薬品", "陸運業", "水産・農林業", "電気・ガス業", "小売業"]:
                 return "🛡️ ディフェンシブ"
             elif sector in ["輸送用機器", "機械", "鉄鋼", "非鉄金属", "ガラス・土石製品", "ゴム製品", "海運業", "化学", "パルプ・紙", "鉱業", "石油・石炭製品", "金属製品"]:
