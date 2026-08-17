@@ -12,10 +12,8 @@ st.title("🚀 日経225 高機能スクリーニングアプリ (J-Quants公式
 st.write("指標（PER, PBR, ROE, 配当利回り、配当性向、自己資本比率）を総合的に分析し、割安スコアを算出します。")
 
 # --- J-Quants V2 API 最新の超高速通信システム ---
-# 金庫からAPIキー（鍵）を取り出す
 api_key = None
 if "JQUANTS_REFRESH_TOKEN" in st.secrets:
-    # 万が一の空白や記号を綺麗にお掃除
     raw_key = st.secrets["JQUANTS_REFRESH_TOKEN"]
     api_key = raw_key.strip().strip('"').strip("'")
 else:
@@ -144,7 +142,6 @@ if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
                 df_fins = get_jquants_fins(code, api_key)
             
             if not df_prices.empty and not df_fins.empty:
-                # V2 APIでは「Close」が「C」に変更されているため対応
                 last_price_row = df_prices.iloc[-1]
                 current_price = parse_float(last_price_row.get("C", last_price_row.get("Close")))
                 
@@ -239,14 +236,23 @@ if st.session_state.analyzed_data is not None:
         
         st.subheader(f"🏆 {st.session_state.last_sector} のランキング一覧")
         
+        # 💡 空っぽのデータ（None）でもエラーにならない安全なフォーマット関数
         def format_percent(x):
             return f"{x * 100:.2f}%" if pd.notna(x) else "ー"
+        def format_price(x):
+            return f"¥{x:,.0f}" if pd.notna(x) else "ー"
+        def format_times(x):
+            return f"{x:.2f} 倍" if pd.notna(x) else "ー"
             
         display_df = df.copy()
         display_df["ROE"] = display_df["ROE"].apply(format_percent)
         display_df["配当利回り"] = display_df["配当利回り"].apply(format_percent)
         display_df["配当性向"] = display_df["配当性向"].apply(format_percent)
         display_df["自己資本比率"] = display_df["自己資本比率"].apply(format_percent)
+        
+        display_df["現在株価"] = display_df["現在株価"].apply(format_price)
+        display_df["予想PER"] = display_df["予想PER"].apply(format_times)
+        display_df["PBR"] = display_df["PBR"].apply(format_times)
         
         display_df = display_df.rename(columns={
             "予想PER": "予想PER (利益の割安度)",
@@ -264,12 +270,9 @@ if st.session_state.analyzed_data is not None:
             "配当利回り (還元率)", "配当性向 (配当の余力)"
         ]]
         
+        # 表の表示（エラーの原因だった style.format をやめて安全な方式に）
         st.dataframe(
-            display_df.style.format({
-                "現在株価": "¥{:,.0f}",
-                "予想PER (利益の割安度)": "{:.2f} 倍",
-                "PBR (資産の割安度)": "{:.2f} 倍"
-            }),
+            display_df,
             use_container_width=True, hide_index=True
         )
         
@@ -309,7 +312,6 @@ if st.session_state.analyzed_data is not None:
                         one_year_ago = pd.Timestamp.now() - pd.DateOffset(years=1)
                         df_hist = df_hist[df_hist["Date"] >= one_year_ago]
                         
-                        # V2 APIの仕様変更(Close -> C)に対応
                         y_column = "C" if "C" in df_hist.columns else "Close"
                         
                         fig_chart = px.line(df_hist, x="Date", y=y_column, title=f"{selected_company} ({target_code}) - 過去1年の株価推移")
