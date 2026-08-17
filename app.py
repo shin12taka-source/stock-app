@@ -11,6 +11,51 @@ st.set_page_config(page_title="日経225 高機能スクリーニング", layout
 st.title("🚀 日経225 高機能スクリーニングアプリ")
 st.write("指標（PER, PBR, ROE, 配当利回り）を総合的に分析し、割安スコアを算出します。")
 
+# --- 用語解説と目安の折りたたみメニュー ---
+with st.expander("💡 投資指標の用語解説と目安基準を見る"):
+    st.markdown("""
+    配当金重視や全体のバランスを考えた運用において、投資先の企業が「安全か」「割安か」「しっかり還元してくれるか」を見極めるための代表的な指標です。
+
+    ### 1. 配当と株主還元を見る指標（最重要）
+    * **配当利回り（%）**
+      * **意味:** 株価に対して年間で何%の配当が出るか。
+      * **目安:** 日本株平均は2%前後。高配当株を狙うなら3.5%〜4.5%がひとつの目安（5%超は業績悪化リスクに注意）。
+    * **配当性向（%）**
+      * **意味:** 会社が稼いだ純利益のうち、何%を配当金の支払いに回しているか。
+      * **目安:** 30%〜50%が適正ゾーン。高すぎると無理して配当を出している（減配リスク）可能性あり。
+    * **DOE（株主資本配当率）**
+      * **意味:** 会社の純資産に対して何%の配当を出しているか。
+      * **メリット:** 純利益は年ごとの業績でブレますが、純資産は急変動しにくいため、DOEを基準にする企業は配当が安定しやすい。
+
+    ### 2. 株価の割安・割高を見る指標
+    * **PER（株価収益率 / 倍）**
+      * **意味:** 企業の「利益」に対して、株価が何倍まで買われているか（元を取るのに何年かかるか）。
+      * **目安:** 15倍前後が平均。10〜12倍以下なら割安、20倍以上なら割高とされることが多い。
+    * **PBR（株価純資産倍率 / 倍）**
+      * **意味:** 企業の「解散価値（純資産）」に対して、株価が何倍か。
+      * **目安:** 1倍が基準。1倍割れは資産価値よりも株価が安い「割安株（バリュー株）」。
+
+    ### 3. 企業の稼ぐ力と安全性を見る指標
+    * **ROE（自己資本利益率 / %）**
+      * **意味:** 株主から集めたお金を使って、どれだけ効率よく利益を出しているか。
+      * **目安:** 8%〜10%以上あれば「稼ぐ力が強い優良企業」。
+    * **自己資本比率（%）**
+      * **意味:** 返済不要の自己資金が全体の何%を占めているか（財務の安全性）。
+      * **目安:** 一般企業なら40%以上あると安心（※金融業を除く）。
+
+    ---
+    **【重要指標の早見表】**
+    | 分類 | 指標 | チェックする目安 |
+    | :--- | :--- | :--- |
+    | **還元** | 配当利回り | 3.5% 〜 4.5%（高すぎないか確認） |
+    | **還元** | 配当性向 | 30% 〜 50%（無理な配当でないか確認） |
+    | **割安度** | PER | 15倍以下（利益に対して割安か） |
+    | **割安度** | PBR | 1倍前後または1倍割れ（資産に対して割安か） |
+    | **稼ぐ力** | ROE | 8%以上（効率よく稼げているか） |
+    | **安全性** | 自己資本比率 | 40%以上（倒産リスクが低いか ※金融除く） |
+    """)
+# ----------------------------------------
+
 # --- 1. CSVデータの読み込み ---
 csv_file = "nikkei225.csv"
 if not os.path.exists(csv_file):
@@ -31,13 +76,30 @@ if "analyzed_data" not in st.session_state:
 if "last_sector" not in st.session_state:
     st.session_state.last_sector = None
 
-selected_sector = st.selectbox("分析したい業種を選択してください:", sectors)
+# --- 検索機能の追加 ---
+st.subheader("🔍 検索条件の設定")
+search_mode = st.radio("検索方法を選んでください:", ["業種から一括検索", "特定の銘柄から同業他社を検索（コード・企業名）"])
+
+if search_mode == "業種から一括検索":
+    selected_sector = st.selectbox("分析したい業種を選択してください:", sectors)
+else:
+    # 銘柄コードと企業名を結合した検索用リストを作成（例: "7203 - トヨタ自動車"）
+    company_options = df_list["銘柄コード"].astype(str) + " - " + df_list["企業名"]
+    selected_company_str = st.selectbox("枠内をクリックし、企業名または銘柄コード（数字4桁）を入力してください:", company_options)
+    
+    # 選択された文字列からコードを抽出し、その企業の「業種」を自動特定する
+    selected_code = int(selected_company_str.split(" - ")[0])
+    selected_sector = df_list[df_list["銘柄コード"] == selected_code]["業種"].values[0]
+    selected_name = df_list[df_list["銘柄コード"] == selected_code]["企業名"].values[0]
+    
+    st.info(f"💡 「{selected_name}」は【{selected_sector}】です。この業種内の同業他社と比較します。")
 
 # 違う業種が選ばれたらデータをリセット
 if selected_sector != st.session_state.last_sector:
     st.session_state.analyzed_data = None
 
 target_stocks = df_list[df_list["業種"] == selected_sector]
+# --------------------
 
 # --- 2. データ取得処理 ---
 if st.button(f"「{selected_sector}」のデータを取得＆分析"):
@@ -77,7 +139,8 @@ if st.button(f"「{selected_sector}」のデータを取得＆分析"):
                 "予想PER": info.get("forwardPE", None),
                 "PBR": info.get("priceToBook", None),
                 "ROE": info.get("returnOnEquity", None),
-                "配当利回り": div_yield
+                "配当利回り": div_yield,
+                "配当性向": info.get("payoutRatio", None)
             })
         except Exception as e:
             st.error(f"{name}の取得エラー: {e}")
@@ -131,9 +194,10 @@ if st.session_state.analyzed_data is not None:
     display_df = df.copy()
     display_df["ROE"] = display_df["ROE"].apply(format_percent)
     display_df["配当利回り"] = display_df["配当利回り"].apply(format_percent)
+    display_df["配当性向"] = display_df["配当性向"].apply(format_percent)
     
     # 列の並び順を整える
-    display_df = display_df[["割安度", "銘柄コード", "企業名", "現在株価", "予想PER", "PBR", "ROE", "配当利回り"]]
+    display_df = display_df[["割安度", "銘柄コード", "企業名", "現在株価", "予想PER", "PBR", "ROE", "配当利回り", "配当性向"]]
     
     st.dataframe(
         display_df.style.format({
