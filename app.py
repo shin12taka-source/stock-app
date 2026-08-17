@@ -1,16 +1,29 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import time
 import os
-import random
+import jquantsapi
 import plotly.express as px
 
 # ページ基本設定
 st.set_page_config(page_title="日経225 高機能スクリーニング", layout="wide")
 
-st.title("🚀 日経225 高機能スクリーニングアプリ")
+st.title("🚀 日経225 高機能スクリーニングアプリ (J-Quants公式データ版)")
 st.write("指標（PER, PBR, ROE, 配当利回り、配当性向、自己資本比率）を総合的に分析し、割安スコアを算出します。")
+
+# --- J-Quants APIの認証チェック ---
+try:
+    if "JQUANTS_REFRESH_TOKEN" in st.secrets:
+        refresh_token = st.secrets["JQUANTS_REFRESH_TOKEN"]
+        # J-Quantsクライアントの初期化（鍵を使ってログイン）
+        cli = jquantsapi.Client(refresh_token=refresh_token)
+    else:
+        st.error("⚠️ StreamlitのSecretsに鍵（JQUANTS_REFRESH_TOKEN）が設定されていません。")
+        st.stop()
+except Exception as e:
+    st.error(f"⚠️ J-Quantsの認証に失敗しました。鍵の文字列が正しいか確認してください。エラー詳細: {e}")
+    st.stop()
+# --------------------------------
 
 # --- 用語解説と目安の折りたたみメニュー ---
 with st.expander("💡 投資指標とグループ分けの解説を見る"):
@@ -26,7 +39,6 @@ with st.expander("💡 投資指標とグループ分けの解説を見る"):
       * **目安:** 30%〜50%が適正ゾーン。高すぎると無理して配当を出している（減配リスク）可能性あり。
     * **DOE（株主資本配当率）**
       * **意味:** 会社の純資産に対して何%の配当を出しているか。
-      * **メリット:** 純利益は年ごとの業績でブレますが、純資産は急変動しにくいため、DOEを基準にする企業は配当が安定しやすい。
 
     ### 2. 株価の割安・割高を見る指標
     * **PER（株価収益率 / 倍）**
@@ -49,13 +61,9 @@ with st.expander("💡 投資指標とグループ分けの解説を見る"):
     リスクを分散させるため、相関性の異なる（違う動きをする）業種を組み合わせます。
 
     * **🛡️ ディフェンシブ** (情報・通信、食料品、医薬品、陸運など)
-      * **期待される効果:** 景気に左右されにくく、安定した収益が見込める。相場下落時のクッション役。
     * **💰 高配当・バリュー** (銀行業、保険業、卸売業など)
-      * **期待される効果:** 高めの配当利回りで、利益の土台（年3〜4%など）を作る。金利上昇に強い。
     * **🏭 景気敏感（シクリカル）** (輸送用機器、機械、鉄鋼など)
-      * **期待される効果:** 景気拡大期に業績が伸びやすく値上がり益を狙える。為替の影響も受けやすい。
     * **🚀 成長（グロース）** (電気機器、サービス業など)
-      * **期待される効果:** AIやDXなどのテーマ性を持ち、市場平均以上の大きな株価上昇を牽引する。
     """)
 # ----------------------------------------
 
@@ -94,7 +102,6 @@ else:
     
     st.info(f"💡 「{selected_name}」は【{selected_sector}】です。この業種内の同業他社と比較します。")
 
-# 違う業種が選ばれたらデータをリセット
 if selected_sector != st.session_state.last_sector:
     st.session_state.analyzed_data = None
 
@@ -102,78 +109,83 @@ target_stocks = df_list[df_list["業種"] == selected_sector]
 # --------------------
 
 # --- 2. データ取得処理 ---
-if st.button(f"「{selected_sector}」のデータを取得＆分析"):
+if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
     results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_stocks = len(target_stocks)
     
+    # データを数値に変換する安全な関数
+    def parse_float(val):
+        try:
+            res = pd.to_numeric(val, errors='coerce')
+            return float(res) if pd.notna(res) else None
+        except:
+            return None
+    
     for i, (index, row) in enumerate(target_stocks.iterrows()):
         code = str(row["銘柄コード"])
+        # JPXのシステムでは、銘柄コードの末尾に「0」（普通株式）をつけて5桁で通信します
+        jq_code = f"{code}0" 
         name = row["企業名"]
         sector_name = row["業種"]
-        status_text.text(f"[{i+1}/{total_stocks}] {name} ({code}) のデータを取得中...")
+        status_text.text(f"[{i+1}/{total_stocks}] {name} ({code}) の公式データを取得中...")
         
-        info = {}
-        max_retries = 2 # エラーが出た場合の最大挑戦回数
-        
-        # 💡 API制限回避のための忍者戦略（自動リトライ＆ランダム待機）
-        for attempt in range(max_retries):
-            try:
-                ticker = yf.Ticker(f"{code}.T")
-                info = ticker.info
-                # データが空の場合（アクセス制限時など）はエラー扱いにする
-                if not info or ("symbol" not in info and "currentPrice" not in info):
-                    raise ValueError("Too Many Requests / Empty Data")
-                break # 取得成功したらリトライループを抜ける
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    # 1回目の失敗なら、長めに休んで再トライ
-                    wait_time = random.uniform(5.0, 8.0)
-                    status_text.text(f"[{i+1}/{total_stocks}] {name}: 制限を検知。{wait_time:.1f}秒休んで再挑戦します...")
-                    time.sleep(wait_time)
-                else:
-                    # 2回目もダメなら諦めてスキップ
-                    st.error(f"⚠️ {name}の取得をスキップしました (アクセス制限)")
-
-        # もしリトライしてもデータが取れなかった場合は、次の企業へ進む
-        if not info:
-            continue
-            
         try:
-            # --- 配当利回りの異常値対策 ---
-            current_price = info.get("currentPrice", info.get("regularMarketPrice", None))
-            div_rate = info.get("dividendRate", None)
+            # ① 最新の株価データを取得
+            df_prices = cli.get_prices_daily_quotes(code=jq_code)
+            if df_prices.empty:
+                df_prices = cli.get_prices_daily_quotes(code=code) # 念のための4桁フォールバック
             
-            if pd.notna(div_rate) and pd.notna(current_price) and current_price > 0:
-                div_yield = div_rate / current_price
+            # ② 最新の決算・財務データを取得
+            df_fins = cli.get_fins_statements(code=jq_code)
+            if df_fins.empty:
+                df_fins = cli.get_fins_statements(code=code)
+            
+            if not df_prices.empty and not df_fins.empty:
+                # 最新日のデータを抽出
+                current_price = float(df_prices.iloc[-1]["Close"])
+                latest_fin = df_fins.iloc[-1].to_dict()
+                
+                # J-Quantsの生データから指標を逆算する（証券会社のツールと同じ計算方法）
+                eps = parse_float(latest_fin.get("ForecastEarningsPerShare", latest_fin.get("EarningsPerShare")))
+                bps = parse_float(latest_fin.get("BookValuePerShare"))
+                equity_ratio_raw = parse_float(latest_fin.get("EquityToAssetRatio"))
+                div_annual = parse_float(latest_fin.get("ForecastDividendPerShareAnnual", latest_fin.get("ResultDividendPerShareAnnual")))
+                
+                # 計算
+                per = (current_price / eps) if eps and eps > 0 else None
+                pbr = (current_price / bps) if bps and bps > 0 else None
+                roe = (eps / bps) if eps and bps and bps > 0 else None
+                div_yield = (div_annual / current_price) if div_annual and current_price > 0 else None
+                payout_ratio = (div_annual / eps) if div_annual and eps and eps > 0 else None
+                
+                # 自己資本比率は 0.45 のような小数表記で統一
+                equity_ratio = equity_ratio_raw
+                if equity_ratio and equity_ratio > 1.0:
+                    equity_ratio = equity_ratio / 100.0
+
+                results.append({
+                    "業種": sector_name,
+                    "銘柄コード": code,
+                    "企業名": name,
+                    "現在株価": current_price,
+                    "予想PER": per,
+                    "PBR": pbr,
+                    "ROE": roe,
+                    "配当利回り": div_yield,
+                    "配当性向": payout_ratio,
+                    "自己資本比率": equity_ratio
+                })
             else:
-                div_yield = info.get("dividendYield", None)
-                if pd.notna(div_yield) and div_yield > 0.2:
-                    div_yield = div_yield / 100
-
-            # --- 自己資本比率の概算計算（負債比率から逆算） ---
-            debt_to_equity = info.get("debtToEquity", None)
-            equity_ratio = 1 / ((debt_to_equity / 100) + 1) if pd.notna(debt_to_equity) else None
-
-            # 各種指標の保存
-            results.append({
-                "業種": sector_name,
-                "銘柄コード": code,
-                "企業名": name,
-                "現在株価": current_price,
-                "予想PER": info.get("forwardPE", None),
-                "PBR": info.get("priceToBook", None),
-                "ROE": info.get("returnOnEquity", None),
-                "配当利回り": div_yield,
-                "配当性向": info.get("payoutRatio", None),
-                "自己資本比率": equity_ratio
-            })
+                st.warning(f"⚠️ {name}のデータが見つかりませんでした。")
+                
         except Exception as e:
             st.error(f"{name}のデータ処理エラー: {e}")
         
-        # 💡 次の企業へ行く前に、毎回2.5秒〜4.5秒の間でランダムに休む（人間らしさをアピール）
-        time.sleep(random.uniform(2.5, 4.5))
+        # 💡 Lightプランの制限（1分間に60回=1秒間に1回）を守るためのスマートな待機
+        # 今回は1銘柄あたり2回通信するため、2.5秒待てば絶対に制限に引っかかりません。
+        time.sleep(2.5)
         progress_bar.progress((i + 1) / total_stocks)
         
     status_text.text("データ取得完了！分析を開始します...")
@@ -181,7 +193,6 @@ if st.button(f"「{selected_sector}」のデータを取得＆分析"):
     status_text.empty()
     progress_bar.empty()
     
-    # 取得したデータをセッション（記憶）に保存
     st.session_state.analyzed_data = pd.DataFrame(results)
     st.session_state.last_sector = selected_sector
 
@@ -189,34 +200,30 @@ if st.button(f"「{selected_sector}」のデータを取得＆分析"):
 if st.session_state.analyzed_data is not None:
     df = st.session_state.analyzed_data.copy()
     
-    # 💡 取得データが空っぽ（全滅）の場合はエラーを出して止める
     if df.empty:
-        st.warning("⚠️ データの取得に失敗しました。Yahooファイナンスのアクセス制限にかかっている可能性が高いです。15〜30分ほど時間を置いてから再度お試しください。")
+        st.warning("⚠️ データの取得に失敗しました。")
     else:
-        # 業種平均PERの算出
         avg_pe = df["予想PER"].mean()
         
-        # --- 独自の割安スコアリング機能（MAX 6点） ---
         def calculate_score(row):
             score = 0
             if pd.notna(row["予想PER"]) and pd.notna(avg_pe) and row["予想PER"] < avg_pe:
-                score += 1 # ①業種平均よりPERが低い
+                score += 1
             if pd.notna(row["PBR"]) and row["PBR"] < 1.0:
-                score += 1 # ②解散価値（1倍）を下回っている
+                score += 1
             if pd.notna(row["ROE"]) and row["ROE"] >= 0.08:
-                score += 1 # ③ROE 8%以上
+                score += 1
             if pd.notna(row["配当利回り"]) and row["配当利回り"] >= 0.035:
-                score += 1 # ④配当利回りが3.5%以上
+                score += 1
             if pd.notna(row["配当性向"]) and 0.30 <= row["配当性向"] <= 0.50:
-                score += 1 # ⑤配当性向が30%〜50%の適正ゾーン
+                score += 1
             if pd.notna(row["自己資本比率"]) and row["自己資本比率"] >= 0.40:
-                score += 1 # ⑥自己資本比率が40%以上
+                score += 1
             return score
             
         df["スコア"] = df.apply(calculate_score, axis=1)
         df["割安度"] = df["スコア"].apply(lambda x: "⭐" * int(x))
 
-        # --- 画像資料に基づいた4つの投資グループ分類 ---
         def classify_sector(sector):
             if sector in ["情報・通信業", "食料品", "医薬品", "陸運業"]:
                 return "🛡️ ディフェンシブ"
@@ -230,14 +237,11 @@ if st.session_state.analyzed_data is not None:
                 return "📊 その他"
 
         df["投資グループ"] = df["業種"].apply(classify_sector)
-        # ---------------------------------------------
         
-        # スコアが高い順 ＞ 予想PERが低い順 に並び替え
         df = df.sort_values(by=["スコア", "予想PER"], ascending=[False, True])
         
         st.subheader(f"🏆 {st.session_state.last_sector} のランキング一覧")
         
-        # パーセント表示用の関数
         def format_percent(x):
             return f"{x * 100:.2f}%" if pd.notna(x) else "ー"
             
@@ -247,7 +251,6 @@ if st.session_state.analyzed_data is not None:
         display_df["配当性向"] = display_df["配当性向"].apply(format_percent)
         display_df["自己資本比率"] = display_df["自己資本比率"].apply(format_percent)
         
-        # 列の名前を変更
         display_df = display_df.rename(columns={
             "予想PER": "予想PER (利益の割安度)",
             "PBR": "PBR (資産の割安度)",
@@ -257,7 +260,6 @@ if st.session_state.analyzed_data is not None:
             "配当性向": "配当性向 (配当の余力)"
         })
         
-        # 列の並び順を整える
         display_df = display_df[[
             "割安度", "投資グループ", "銘柄コード", "企業名", "現在株価", 
             "予想PER (利益の割安度)", "PBR (資産の割安度)", 
@@ -275,6 +277,7 @@ if st.session_state.analyzed_data is not None:
         )
         
         st.caption("【⭐の獲得条件(MAX 6つ)】①予想PERが業種平均未満 ②PBR 1.0倍未満 ③ROE 8%以上 ④配当利回り 3.5%以上 ⑤配当性向 30%〜50% ⑥自己資本比率 40%以上")
+        st.caption("【投資グループの判定】🛡️ディフェンシブ / 💰高配当・バリュー / 🏭景気敏感(シクリカル) / 🚀成長(グロース)")
         st.divider()
 
         # --- 4. グラフで視覚的に比較 ---
@@ -294,7 +297,7 @@ if st.session_state.analyzed_data is not None:
 
         st.divider()
 
-        # --- 5. 気になる銘柄の過去の株価チャート ---
+        # --- 5. 気になる銘柄の過去の株価チャート (J-Quants版) ---
         st.subheader("📉 個別銘柄の株価チャート（過去1年）")
         st.write("ランキング表から気になる企業を選んで、チャートの形状を確認しましょう。")
         
@@ -302,13 +305,20 @@ if st.session_state.analyzed_data is not None:
         
         if selected_company:
             target_code = df[df["企業名"] == selected_company]["銘柄コード"].values[0]
+            jq_code = f"{target_code}0"
             
             with st.spinner(f"{selected_company} のチャートを取得中..."):
-                target_ticker = yf.Ticker(f"{target_code}.T")
-                hist = target_ticker.history(period="1y")
-                
-                if not hist.empty:
-                    fig_chart = px.line(hist.reset_index(), x="Date", y="Close", title=f"{selected_company} ({target_code}) - 過去1年の株価推移")
-                    st.plotly_chart(fig_chart, use_container_width=True)
-                else:
-                    st.warning("チャートデータが取得できませんでした。")
+                try:
+                    df_hist = cli.get_prices_daily_quotes(code=jq_code)
+                    if not df_hist.empty:
+                        # 過去1年分のデータに絞り込み
+                        df_hist["Date"] = pd.to_datetime(df_hist["Date"])
+                        one_year_ago = pd.Timestamp.now() - pd.DateOffset(years=1)
+                        df_hist = df_hist[df_hist["Date"] >= one_year_ago]
+                        
+                        fig_chart = px.line(df_hist, x="Date", y="Close", title=f"{selected_company} ({target_code}) - 過去1年の株価推移")
+                        st.plotly_chart(fig_chart, use_container_width=True)
+                    else:
+                        st.warning("チャートデータが取得できませんでした。")
+                except Exception as e:
+                    st.error(f"チャートの取得に失敗しました: {e}")
