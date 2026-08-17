@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 import os
-import jquantsapi
+import requests
 import plotly.express as px
 
 # ページ基本設定
@@ -11,18 +11,41 @@ st.set_page_config(page_title="日経225 高機能スクリーニング", layout
 st.title("🚀 日経225 高機能スクリーニングアプリ (J-Quants公式データ版)")
 st.write("指標（PER, PBR, ROE, 配当利回り、配当性向、自己資本比率）を総合的に分析し、割安スコアを算出します。")
 
-# --- J-Quants APIの認証チェック ---
+# --- J-Quants APIの直接認証（ツールを使わない確実な通信方式） ---
+id_token = None
 try:
     if "JQUANTS_REFRESH_TOKEN" in st.secrets:
         refresh_token = st.secrets["JQUANTS_REFRESH_TOKEN"]
-        # J-Quantsクライアントの初期化（鍵を使ってログイン）
-        cli = jquantsapi.Client(refresh_token=refresh_token)
+        # 直接APIを叩いてIDトークン（入場券）を取得する
+        res = requests.post(f"https://api.jquants.com/v1/token/auth_refresh?refresh_token={refresh_token}")
+        if res.status_code == 200:
+            id_token = res.json().get("idToken")
+        else:
+            st.error(f"⚠️ J-Quantsの認証に失敗しました。金庫の鍵の文字列を確認してください。(エラーコード: {res.status_code})")
+            st.stop()
     else:
         st.error("⚠️ StreamlitのSecretsに鍵（JQUANTS_REFRESH_TOKEN）が設定されていません。")
         st.stop()
 except Exception as e:
-    st.error(f"⚠️ J-Quantsの認証に失敗しました。鍵の文字列が正しいか確認してください。エラー詳細: {e}")
+    st.error(f"⚠️ 認証処理中にエラーが発生しました: {e}")
     st.stop()
+
+# 直接データを引き出すための専用通信関数
+def get_jquants_prices(code, token):
+    headers = {"Authorization": f"Bearer {token}"}
+    res = requests.get(f"https://api.jquants.com/v1/quotes/prices_daily?code={code}", headers=headers)
+    if res.status_code == 200:
+        data = res.json().get("daily_quotes", [])
+        return pd.DataFrame(data)
+    return pd.DataFrame()
+
+def get_jquants_fins(code, token):
+    headers = {"Authorization": f"Bearer {token}"}
+    res = requests.get(f"https://api.jquants.com/v1/fins/statements?code={code}", headers=headers)
+    if res.status_code == 200:
+        data = res.json().get("statements", [])
+        return pd.DataFrame(data)
+    return pd.DataFrame()
 # --------------------------------
 
 # --- 用語解説と目安の折りたたみメニュー ---
@@ -37,8 +60,6 @@ with st.expander("💡 投資指標とグループ分けの解説を見る"):
     * **配当性向（%）**
       * **意味:** 会社が稼いだ純利益のうち、何%を配当金の支払いに回しているか。
       * **目安:** 30%〜50%が適正ゾーン。高すぎると無理して配当を出している（減配リスク）可能性あり。
-    * **DOE（株主資本配当率）**
-      * **意味:** 会社の純資産に対して何%の配当を出しているか。
 
     ### 2. 株価の割安・割高を見る指標
     * **PER（株価収益率 / 倍）**
@@ -58,8 +79,6 @@ with st.expander("💡 投資指標とグループ分けの解説を見る"):
 
     ---
     ### 4. 業種特性による4つのグループ分け（分散投資の目安）
-    リスクを分散させるため、相関性の異なる（違う動きをする）業種を組み合わせます。
-
     * **🛡️ ディフェンシブ** (情報・通信、食料品、医薬品、陸運など)
     * **💰 高配当・バリュー** (銀行業、保険業、卸売業など)
     * **🏭 景気敏感（シクリカル）** (輸送用機器、機械、鉄鋼など)
@@ -133,34 +152,31 @@ if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
         
         try:
             # ① 最新の株価データを取得
-            df_prices = cli.get_prices_daily_quotes(code=jq_code)
+            df_prices = get_jquants_prices(jq_code, id_token)
             if df_prices.empty:
-                df_prices = cli.get_prices_daily_quotes(code=code) # 念のための4桁フォールバック
+                df_prices = get_jquants_prices(code, id_token) # 念のための4桁
             
             # ② 最新の決算・財務データを取得
-            df_fins = cli.get_fins_statements(code=jq_code)
+            df_fins = get_jquants_fins(jq_code, id_token)
             if df_fins.empty:
-                df_fins = cli.get_fins_statements(code=code)
+                df_fins = get_jquants_fins(code, id_token)
             
             if not df_prices.empty and not df_fins.empty:
-                # 最新日のデータを抽出
                 current_price = float(df_prices.iloc[-1]["Close"])
                 latest_fin = df_fins.iloc[-1].to_dict()
                 
-                # J-Quantsの生データから指標を逆算する（証券会社のツールと同じ計算方法）
                 eps = parse_float(latest_fin.get("ForecastEarningsPerShare", latest_fin.get("EarningsPerShare")))
                 bps = parse_float(latest_fin.get("BookValuePerShare"))
                 equity_ratio_raw = parse_float(latest_fin.get("EquityToAssetRatio"))
                 div_annual = parse_float(latest_fin.get("ForecastDividendPerShareAnnual", latest_fin.get("ResultDividendPerShareAnnual")))
                 
-                # 計算
+                # 指標の計算
                 per = (current_price / eps) if eps and eps > 0 else None
                 pbr = (current_price / bps) if bps and bps > 0 else None
                 roe = (eps / bps) if eps and bps and bps > 0 else None
                 div_yield = (div_annual / current_price) if div_annual and current_price > 0 else None
                 payout_ratio = (div_annual / eps) if div_annual and eps and eps > 0 else None
                 
-                # 自己資本比率は 0.45 のような小数表記で統一
                 equity_ratio = equity_ratio_raw
                 if equity_ratio and equity_ratio > 1.0:
                     equity_ratio = equity_ratio / 100.0
@@ -183,9 +199,8 @@ if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
         except Exception as e:
             st.error(f"{name}のデータ処理エラー: {e}")
         
-        # 💡 Lightプランの制限（1分間に60回=1秒間に1回）を守るためのスマートな待機
-        # 今回は1銘柄あたり2回通信するため、2.5秒待てば絶対に制限に引っかかりません。
-        time.sleep(2.5)
+        # API制限（1秒に1回）を守るための待機
+        time.sleep(1.5)
         progress_bar.progress((i + 1) / total_stocks)
         
     status_text.text("データ取得完了！分析を開始します...")
@@ -297,7 +312,7 @@ if st.session_state.analyzed_data is not None:
 
         st.divider()
 
-        # --- 5. 気になる銘柄の過去の株価チャート (J-Quants版) ---
+        # --- 5. 気になる銘柄の過去の株価チャート (J-Quants直接通信版) ---
         st.subheader("📉 個別銘柄の株価チャート（過去1年）")
         st.write("ランキング表から気になる企業を選んで、チャートの形状を確認しましょう。")
         
@@ -309,9 +324,8 @@ if st.session_state.analyzed_data is not None:
             
             with st.spinner(f"{selected_company} のチャートを取得中..."):
                 try:
-                    df_hist = cli.get_prices_daily_quotes(code=jq_code)
+                    df_hist = get_jquants_prices(jq_code, id_token)
                     if not df_hist.empty:
-                        # 過去1年分のデータに絞り込み
                         df_hist["Date"] = pd.to_datetime(df_hist["Date"])
                         one_year_ago = pd.Timestamp.now() - pd.DateOffset(years=1)
                         df_hist = df_hist[df_hist["Date"] >= one_year_ago]
