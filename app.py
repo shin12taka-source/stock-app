@@ -11,47 +11,30 @@ st.set_page_config(page_title="日経225 高機能スクリーニング", layout
 st.title("🚀 日経225 高機能スクリーニングアプリ (J-Quants公式データ版)")
 st.write("指標（PER, PBR, ROE, 配当利回り、配当性向、自己資本比率）を総合的に分析し、割安スコアを算出します。")
 
-# --- J-Quants APIの直接認証（文字化け防止・完全通信版） ---
-id_token = None
-try:
-    if "JQUANTS_REFRESH_TOKEN" in st.secrets:
-        # 万が一、余計な空白や「"」が混ざっていても自動で掃除する安全処理
-        raw_token = st.secrets["JQUANTS_REFRESH_TOKEN"]
-        refresh_token = raw_token.strip().strip('"').strip("'")
-        
-        # 文字化けしないように「params」という専用カプセルに入れて鍵を送信する
-        res = requests.post(
-            "https://api.jquants.com/v1/token/auth_refresh",
-            params={"refresh_token": refresh_token}
-        )
-        
-        if res.status_code == 200:
-            id_token = res.json().get("idToken")
-        else:
-            st.error(f"⚠️ J-Quantsの認証に失敗しました。金庫の鍵の文字列を確認してください。(エラーコード: {res.status_code})")
-            st.stop()
-    else:
-        st.error("⚠️ StreamlitのSecretsに鍵（JQUANTS_REFRESH_TOKEN）が設定されていません。")
-        st.stop()
-except Exception as e:
-    st.error(f"⚠️ 認証処理中にエラーが発生しました: {e}")
+# --- J-Quants V2 API 最新の超高速通信システム ---
+# 金庫からAPIキー（鍵）を取り出す
+api_key = None
+if "JQUANTS_REFRESH_TOKEN" in st.secrets:
+    # 万が一の空白や記号を綺麗にお掃除
+    raw_key = st.secrets["JQUANTS_REFRESH_TOKEN"]
+    api_key = raw_key.strip().strip('"').strip("'")
+else:
+    st.error("⚠️ StreamlitのSecretsに鍵（APIキー）が設定されていません。")
     st.stop()
 
-# 直接データを引き出すための専用通信関数
-def get_jquants_prices(code, token):
-    headers = {"Authorization": f"Bearer {token}"}
-    res = requests.get(f"https://api.jquants.com/v1/quotes/prices_daily?code={code}", headers=headers)
+# 直接データを引き出すための専用通信関数（V2対応）
+def get_jquants_prices(code, key):
+    headers = {"x-api-key": key}
+    res = requests.get(f"https://api.jquants.com/v2/equities/bars/daily?code={code}", headers=headers)
     if res.status_code == 200:
-        data = res.json().get("daily_quotes", [])
-        return pd.DataFrame(data)
+        return pd.DataFrame(res.json().get("data", []))
     return pd.DataFrame()
 
-def get_jquants_fins(code, token):
-    headers = {"Authorization": f"Bearer {token}"}
-    res = requests.get(f"https://api.jquants.com/v1/fins/statements?code={code}", headers=headers)
+def get_jquants_fins(code, key):
+    headers = {"x-api-key": key}
+    res = requests.get(f"https://api.jquants.com/v2/fins/summary?code={code}", headers=headers)
     if res.status_code == 200:
-        data = res.json().get("statements", [])
-        return pd.DataFrame(data)
+        return pd.DataFrame(res.json().get("data", []))
     return pd.DataFrame()
 # --------------------------------
 
@@ -63,25 +46,21 @@ with st.expander("💡 投資指標とグループ分けの解説を見る"):
     ### 1. 配当と株主還元を見る指標（最重要）
     * **配当利回り（%）**
       * **意味:** 株価に対して年間で何%の配当が出るか。
-      * **目安:** 日本株平均は2%前後。高配当株を狙うなら3.5%〜4.5%がひとつの目安（5%超は業績悪化リスクに注意）。
+      * **目安:** 日本株平均は2%前後。高配当株を狙うなら3.5%〜4.5%がひとつの目安。
     * **配当性向（%）**
       * **意味:** 会社が稼いだ純利益のうち、何%を配当金の支払いに回しているか。
-      * **目安:** 30%〜50%が適正ゾーン。高すぎると無理して配当を出している（減配リスク）可能性あり。
+      * **目安:** 30%〜50%が適正ゾーン。
 
     ### 2. 株価の割安・割高を見る指標
     * **PER（株価収益率 / 倍）**
-      * **意味:** 企業の「利益」に対して、株価が何倍まで買われているか（元を取るのに何年かかるか）。
-      * **目安:** 15倍前後が平均。10〜12倍以下なら割安、20倍以上なら割高とされることが多い。
+      * **目安:** 15倍前後が平均。10〜12倍以下なら割安。
     * **PBR（株価純資産倍率 / 倍）**
-      * **意味:** 企業の「解散価値（純資産）」に対して、株価が何倍か。
       * **目安:** 1倍が基準。1倍割れは資産価値よりも株価が安い「割安株（バリュー株）」。
 
     ### 3. 企業の稼ぐ力と安全性を見る指標
     * **ROE（自己資本利益率 / %）**
-      * **意味:** 株主から集めたお金を使って、どれだけ効率よく利益を出しているか。
       * **目安:** 8%〜10%以上あれば「稼ぐ力が強い優良企業」。
     * **自己資本比率（%）**
-      * **意味:** 返済不要の自己資金が全体の何%を占めているか（財務の安全性）。
       * **目安:** 一般企業なら40%以上あると安心（※金融業を除く）。
 
     ---
@@ -141,7 +120,6 @@ if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
     status_text = st.empty()
     total_stocks = len(target_stocks)
     
-    # データを数値に変換する安全な関数
     def parse_float(val):
         try:
             res = pd.to_numeric(val, errors='coerce')
@@ -151,37 +129,35 @@ if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
     
     for i, (index, row) in enumerate(target_stocks.iterrows()):
         code = str(row["銘柄コード"])
-        # JPXのシステムでは、銘柄コードの末尾に「0」（普通株式）をつけて5桁で通信します
         jq_code = f"{code}0" 
         name = row["企業名"]
         sector_name = row["業種"]
         status_text.text(f"[{i+1}/{total_stocks}] {name} ({code}) の公式データを取得中...")
         
         try:
-            # ① 最新の株価データを取得
-            df_prices = get_jquants_prices(jq_code, id_token)
+            df_prices = get_jquants_prices(jq_code, api_key)
             if df_prices.empty:
-                df_prices = get_jquants_prices(code, id_token) # 念のための4桁
+                df_prices = get_jquants_prices(code, api_key)
             
-            # ② 最新の決算・財務データを取得
-            df_fins = get_jquants_fins(jq_code, id_token)
+            df_fins = get_jquants_fins(jq_code, api_key)
             if df_fins.empty:
-                df_fins = get_jquants_fins(code, id_token)
+                df_fins = get_jquants_fins(code, api_key)
             
             if not df_prices.empty and not df_fins.empty:
-                current_price = float(df_prices.iloc[-1]["Close"])
-                latest_fin = df_fins.iloc[-1].to_dict()
+                # V2 APIでは「Close」が「C」に変更されているため対応
+                last_price_row = df_prices.iloc[-1]
+                current_price = parse_float(last_price_row.get("C", last_price_row.get("Close")))
                 
+                latest_fin = df_fins.iloc[-1].to_dict()
                 eps = parse_float(latest_fin.get("ForecastEarningsPerShare", latest_fin.get("EarningsPerShare")))
                 bps = parse_float(latest_fin.get("BookValuePerShare"))
                 equity_ratio_raw = parse_float(latest_fin.get("EquityToAssetRatio"))
                 div_annual = parse_float(latest_fin.get("ForecastDividendPerShareAnnual", latest_fin.get("ResultDividendPerShareAnnual")))
                 
-                # 指標の計算
-                per = (current_price / eps) if eps and eps > 0 else None
-                pbr = (current_price / bps) if bps and bps > 0 else None
+                per = (current_price / eps) if current_price and eps and eps > 0 else None
+                pbr = (current_price / bps) if current_price and bps and bps > 0 else None
                 roe = (eps / bps) if eps and bps and bps > 0 else None
-                div_yield = (div_annual / current_price) if div_annual and current_price > 0 else None
+                div_yield = (div_annual / current_price) if div_annual and current_price and current_price > 0 else None
                 payout_ratio = (div_annual / eps) if div_annual and eps and eps > 0 else None
                 
                 equity_ratio = equity_ratio_raw
@@ -206,8 +182,7 @@ if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
         except Exception as e:
             st.error(f"{name}のデータ処理エラー: {e}")
         
-        # API制限（1秒に1回）を守るための待機
-        time.sleep(1.5)
+        time.sleep(1.2) # API制限を守るための待機時間
         progress_bar.progress((i + 1) / total_stocks)
         
     status_text.text("データ取得完了！分析を開始します...")
@@ -299,10 +274,8 @@ if st.session_state.analyzed_data is not None:
         )
         
         st.caption("【⭐の獲得条件(MAX 6つ)】①予想PERが業種平均未満 ②PBR 1.0倍未満 ③ROE 8%以上 ④配当利回り 3.5%以上 ⑤配当性向 30%〜50% ⑥自己資本比率 40%以上")
-        st.caption("【投資グループの判定】🛡️ディフェンシブ / 💰高配当・バリュー / 🏭景気敏感(シクリカル) / 🚀成長(グロース)")
         st.divider()
 
-        # --- 4. グラフで視覚的に比較 ---
         st.subheader("📊 業種内での指標比較グラフ")
         col_chart1, col_chart2 = st.columns(2)
         
@@ -319,7 +292,6 @@ if st.session_state.analyzed_data is not None:
 
         st.divider()
 
-        # --- 5. 気になる銘柄の過去の株価チャート (J-Quants直接通信版) ---
         st.subheader("📉 個別銘柄の株価チャート（過去1年）")
         st.write("ランキング表から気になる企業を選んで、チャートの形状を確認しましょう。")
         
@@ -331,13 +303,16 @@ if st.session_state.analyzed_data is not None:
             
             with st.spinner(f"{selected_company} のチャートを取得中..."):
                 try:
-                    df_hist = get_jquants_prices(jq_code, id_token)
+                    df_hist = get_jquants_prices(jq_code, api_key)
                     if not df_hist.empty:
                         df_hist["Date"] = pd.to_datetime(df_hist["Date"])
                         one_year_ago = pd.Timestamp.now() - pd.DateOffset(years=1)
                         df_hist = df_hist[df_hist["Date"] >= one_year_ago]
                         
-                        fig_chart = px.line(df_hist, x="Date", y="Close", title=f"{selected_company} ({target_code}) - 過去1年の株価推移")
+                        # V2 APIの仕様変更(Close -> C)に対応
+                        y_column = "C" if "C" in df_hist.columns else "Close"
+                        
+                        fig_chart = px.line(df_hist, x="Date", y=y_column, title=f"{selected_company} ({target_code}) - 過去1年の株価推移")
                         st.plotly_chart(fig_chart, use_container_width=True)
                     else:
                         st.warning("チャートデータが取得できませんでした。")
