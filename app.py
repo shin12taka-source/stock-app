@@ -43,10 +43,8 @@ with st.expander("💡 投資指標とグループ分けの解説を見る"):
 
     ### 1. 配当と株主還元を見る指標（最重要）
     * **配当利回り（%）**
-      * **意味:** 株価に対して年間で何%の配当が出るか。
       * **目安:** 日本株平均は2%前後。高配当株を狙うなら3.5%〜4.5%がひとつの目安。
     * **配当性向（%）**
-      * **意味:** 会社が稼いだ純利益のうち、何%を配当金の支払いに回しているか。
       * **目安:** 30%〜50%が適正ゾーン。
 
     ### 2. 株価の割安・割高を見る指標
@@ -62,11 +60,16 @@ with st.expander("💡 投資指標とグループ分けの解説を見る"):
       * **目安:** 一般企業なら40%以上あると安心（※金融業を除く）。
 
     ---
-    ### 4. 業種特性による4つのグループ分け（分散投資の目安）
-    * **🛡️ ディフェンシブ** (情報・通信、食料品、医薬品、陸運など)
-    * **💰 高配当・バリュー** (銀行業、保険業、卸売業など)
-    * **🏭 景気敏感（シクリカル）** (輸送用機器、機械、鉄鋼など)
-    * **🚀 成長（グロース）** (電気機器、サービス業など)
+    ### 4. 指標×業種による4つのグループ分け（ハイブリッド判定）
+    リスクを分散させるため、相関性の異なる（違う動きをする）銘柄を組み合わせます。
+    * **🚀 成長（グロース）** 
+      * **判定基準:** ROE10%以上＆PBR1.5倍以上の「稼ぐ力が強く市場の期待が高い」企業、または電気・サービス業。
+    * **💰 高配当・バリュー**
+      * **判定基準:** 配当利回り3.5%以上＆PBR1倍未満の「高利回りで割安」な企業、または銀行・卸売業など。
+    * **🛡️ ディフェンシブ** 
+      * **判定基準:** 情報・通信、食料品、医薬品、陸運など、景気に左右されにくい安定業種。
+    * **🏭 景気敏感（シクリカル）**
+      * **判定基準:** 輸送用機器、機械、鉄鋼など、景気拡大期に値上がり益を狙える業種。
     """)
 # ----------------------------------------
 
@@ -148,25 +151,34 @@ if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
                 if current_price is None:
                     current_price = parse_float(last_price_row.get("Close"))
                 
-                # 2. 財務データの取得（V2APIの新しいラベル名に完全対応！）
-                latest_fin = df_fins.iloc[-1].to_dict()
+                # 2. 財務データの取得（徹底捜索ロジック：過去から遡って最新の有効値を探す）
+                eps, bps, equity_ratio_raw, div_annual, roe_raw = None, None, None, None, None
                 
-                eps = parse_float(latest_fin.get("FEPS"))
-                if eps is None:
-                    eps = parse_float(latest_fin.get("EPS"))
+                # 古い決算から順に最新まで回し、存在する値で上書きし続ける（最新の有効値が残る）
+                for fin_idx in range(len(df_fins)):
+                    fin = df_fins.iloc[fin_idx].to_dict()
                     
-                bps = parse_float(latest_fin.get("BPS"))
-                equity_ratio_raw = parse_float(latest_fin.get("EqAR"))
-                
-                div_annual = parse_float(latest_fin.get("FDivAnn"))
-                if div_annual is None:
-                    div_annual = parse_float(latest_fin.get("DivAnn"))
+                    val_eps = parse_float(fin.get("FEPS"))
+                    if val_eps is None: val_eps = parse_float(fin.get("EPS"))
+                    if val_eps is not None: eps = val_eps
+                    
+                    val_bps = parse_float(fin.get("BPS"))
+                    if val_bps is not None: bps = val_bps
+                    
+                    val_eq = parse_float(fin.get("EqAR"))
+                    if val_eq is not None: equity_ratio_raw = val_eq
+                    
+                    val_div = parse_float(fin.get("FDivAnn"))
+                    if val_div is None: val_div = parse_float(fin.get("DivAnn"))
+                    if val_div is not None: div_annual = val_div
+                    
+                    val_roe = parse_float(fin.get("ROE"))
+                    if val_roe is not None: roe_raw = val_roe
                 
                 # 3. 指標の計算
                 per = (current_price / eps) if current_price and eps and eps > 0 else None
                 pbr = (current_price / bps) if current_price and bps and bps > 0 else None
                 
-                roe_raw = parse_float(latest_fin.get("ROE"))
                 if roe_raw is not None:
                     roe = roe_raw / 100.0 if abs(roe_raw) > 1.0 else roe_raw
                 else:
@@ -236,25 +248,39 @@ if st.session_state.analyzed_data is not None:
         df["スコア"] = df.apply(calculate_score, axis=1)
         df["割安度"] = df["スコア"].apply(lambda x: "⭐" * int(x))
 
-        def classify_sector(sector):
-            if sector in ["情報・通信業", "食料品", "医薬品", "陸運業"]:
-                return "🛡️ ディフェンシブ"
-            elif sector in ["銀行業", "保険業", "卸売業"]:
-                return "💰 高配当・バリュー"
-            elif sector in ["輸送用機器", "機械", "鉄鋼"]:
-                return "🏭 景気敏感(シクリカル)"
-            elif sector in ["電気機器", "サービス業"]:
+        # 💡 新しいハイブリッド判定ロジック（指標優先、業種は補助）
+        def classify_hybrid(row):
+            sector = row["業種"]
+            pbr = row["PBR"]
+            roe = row["ROE"]
+            div = row["配当利回り"]
+            
+            # ① 実績指標が「圧倒的成長」を示している場合
+            if pd.notna(roe) and roe >= 0.10 and pd.notna(pbr) and pbr >= 1.5:
                 return "🚀 成長(グロース)"
+                
+            # ② 実績指標が「圧倒的高配当・バリュー」を示している場合
+            if pd.notna(div) and div >= 0.035 and pd.notna(pbr) and pbr < 1.0:
+                return "💰 高配当・バリュー"
+                
+            # ③ 指標の決定打がない場合は、業種の特性でベース分類
+            if sector in ["情報・通信業", "食料品", "医薬品", "陸運業", "水産・農林業", "電気・ガス業", "小売業"]:
+                return "🛡️ ディフェンシブ"
+            elif sector in ["輸送用機器", "機械", "鉄鋼", "非鉄金属", "ガラス・土石製品", "ゴム製品", "海運業", "化学", "パルプ・紙", "鉱業", "石油・石炭製品", "金属製品"]:
+                return "🏭 景気敏感(シクリカル)"
+            elif sector in ["電気機器", "サービス業", "精密機器"]:
+                return "🚀 成長(グロース)"
+            elif sector in ["銀行業", "保険業", "証券、商品先物取引業", "卸売業", "建設業", "不動産業", "その他金融業"]:
+                return "💰 高配当・バリュー"
             else:
                 return "📊 その他"
 
-        df["投資グループ"] = df["業種"].apply(classify_sector)
+        df["投資グループ"] = df.apply(classify_hybrid, axis=1)
         
         df = df.sort_values(by=["スコア", "予想PER"], ascending=[False, True])
         
         st.subheader(f"🏆 {st.session_state.last_sector} のランキング一覧")
         
-        # 💡 空っぽのデータ（None）でもエラーにならない安全なフォーマット関数
         def format_percent(x):
             return f"{x * 100:.2f}%" if pd.notna(x) else "ー"
         def format_price(x):
