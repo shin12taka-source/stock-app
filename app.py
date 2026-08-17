@@ -142,23 +142,41 @@ if st.button(f"「{selected_sector}」の公式データを取得＆分析"):
                 df_fins = get_jquants_fins(code, api_key)
             
             if not df_prices.empty and not df_fins.empty:
+                # 1. 現在株価の取得
                 last_price_row = df_prices.iloc[-1]
-                current_price = parse_float(last_price_row.get("C", last_price_row.get("Close")))
+                current_price = parse_float(last_price_row.get("C"))
+                if current_price is None:
+                    current_price = parse_float(last_price_row.get("Close"))
                 
+                # 2. 財務データの取得（V2APIの新しいラベル名に完全対応！）
                 latest_fin = df_fins.iloc[-1].to_dict()
-                eps = parse_float(latest_fin.get("ForecastEarningsPerShare", latest_fin.get("EarningsPerShare")))
-                bps = parse_float(latest_fin.get("BookValuePerShare"))
-                equity_ratio_raw = parse_float(latest_fin.get("EquityToAssetRatio"))
-                div_annual = parse_float(latest_fin.get("ForecastDividendPerShareAnnual", latest_fin.get("ResultDividendPerShareAnnual")))
                 
+                eps = parse_float(latest_fin.get("FEPS"))
+                if eps is None:
+                    eps = parse_float(latest_fin.get("EPS"))
+                    
+                bps = parse_float(latest_fin.get("BPS"))
+                equity_ratio_raw = parse_float(latest_fin.get("EqAR"))
+                
+                div_annual = parse_float(latest_fin.get("FDivAnn"))
+                if div_annual is None:
+                    div_annual = parse_float(latest_fin.get("DivAnn"))
+                
+                # 3. 指標の計算
                 per = (current_price / eps) if current_price and eps and eps > 0 else None
                 pbr = (current_price / bps) if current_price and bps and bps > 0 else None
-                roe = (eps / bps) if eps and bps and bps > 0 else None
+                
+                roe_raw = parse_float(latest_fin.get("ROE"))
+                if roe_raw is not None:
+                    roe = roe_raw / 100.0 if abs(roe_raw) > 1.0 else roe_raw
+                else:
+                    roe = (eps / bps) if eps and bps and bps > 0 else None
+                    
                 div_yield = (div_annual / current_price) if div_annual and current_price and current_price > 0 else None
                 payout_ratio = (div_annual / eps) if div_annual and eps and eps > 0 else None
                 
                 equity_ratio = equity_ratio_raw
-                if equity_ratio and equity_ratio > 1.0:
+                if equity_ratio and abs(equity_ratio) > 1.0:
                     equity_ratio = equity_ratio / 100.0
 
                 results.append({
@@ -270,7 +288,6 @@ if st.session_state.analyzed_data is not None:
             "配当利回り (還元率)", "配当性向 (配当の余力)"
         ]]
         
-        # 表の表示（エラーの原因だった style.format をやめて安全な方式に）
         st.dataframe(
             display_df,
             use_container_width=True, hide_index=True
